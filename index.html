@@ -21,6 +21,21 @@
 
   .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
+  .filebar {
+    background: #ece3d8;
+    border-bottom: 1px solid #d8cab8;
+    padding: 6px 20px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    font-size: 0.82rem;
+    color: #6e5538;
+    flex-wrap: wrap;
+  }
+  .filebar.connected { background: #e3efe0; border-color: #c2dcb8; color: #3a6b2f; }
+  .filebar-hint { color: #b05a3a; }
+  .btn-sm { padding: 4px 10px; font-size: 0.8rem; }
+
   .page { display: none; }
   .page.active { display: block; }
 
@@ -171,6 +186,12 @@
   <span class="breadcrumb" id="breadcrumb"></span>
 </header>
 
+<div class="filebar no-print" id="filebar">
+  <span id="file-status">保存ファイル：未接続</span>
+  <button class="btn btn-ghost btn-sm" data-action="connect-file">📁 ファイルに接続</button>
+  <span class="filebar-hint" id="file-hint"></span>
+</div>
+
 <!-- 製品一覧ページ -->
 <div class="page active" id="page-list">
   <div class="container">
@@ -291,13 +312,159 @@ function load() {
   catch (e) { return { products: [] }; }
 }
 function save(data) {
-  if (!STORAGE_OK) { memoryStore = data; return; }
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
-  catch (e) { alert('保存に失敗しました: ' + e.message); }
+  if (STORAGE_OK) {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+    catch (e) { /* file側に保存できていれば致命的でない */ }
+  } else {
+    memoryStore = data;
+  }
+  scheduleFileWrite(); // 接続中ならファイルにも自動保存
 }
 
 var db = load();
 var currentProductId = null;
+
+// ===== ファイル自動保存（File System Access API） =====
+// IndexedDBにファイルハンドルを保存しておき、再訪時に同じファイルへ書き込む
+var FSA_OK = (typeof window.showSaveFilePicker === 'function');
+var fileHandle = null;
+var writeTimer = null;
+
+function idb() {
+  return new Promise(function(resolve, reject) {
+    var req = indexedDB.open('butudan_fs', 1);
+    req.onupgradeneeded = function() { req.result.createObjectStore('kv'); };
+    req.onsuccess = function() { resolve(req.result); };
+    req.onerror = function() { reject(req.error); };
+  });
+}
+function idbSet(key, val) {
+  return idb().then(function(d) {
+    return new Promise(function(res, rej) {
+      var tx = d.transaction('kv', 'readwrite');
+      tx.objectStore('kv').put(val, key);
+      tx.oncomplete = res; tx.onerror = function(){ rej(tx.error); };
+    });
+  });
+}
+function idbGet(key) {
+  return idb().then(function(d) {
+    return new Promise(function(res, rej) {
+      var tx = d.transaction('kv', 'readonly');
+      var r = tx.objectStore('kv').get(key);
+      r.onsuccess = function(){ res(r.result); };
+      r.onerror = function(){ rej(r.error); };
+    });
+  });
+}
+
+function verifyPermission(handle, write) {
+  var opts = { mode: write ? 'readwrite' : 'read' };
+  return handle.queryPermission(opts).then(function(p) {
+    if (p === 'granted') return true;
+    return handle.requestPermission(opts).then(function(p2){ return p2 === 'granted'; });
+  });
+}
+
+function setFileStatus(name, connected, hint) {
+  $('file-status').textContent = '保存ファイル：' + (name || '未接続');
+  $('filebar').classList.toggle('connected', !!connected);
+  $('file-hint').textContent = hint || '';
+}
+
+// 新規にファイルへ接続（ユーザー操作から呼ぶ）
+function connectFile() {
+  if (!FSA_OK) {
+    alert('このブラウザは自動ファイル保存に対応していません。Chrome または Edge で開いてください。');
+    return;
+  }
+  window.showSaveFilePicker({
+    suggestedName: 'butudan-data.json',
+    types: [{ description: '仏壇データ', accept: { 'application/json': ['.json'] } }]
+  }).then(function(handle) {
+    fileHandle = handle;
+    return idbSet('handle', handle).then(function() {
+      return writeFileNow();
+    }).then(function() {
+      setFileStatus(handle.name, true, '');
+      alert('ファイルに接続しました。以降は入力するたびに自動保存されます。');
+    });
+  }).catch(function(e) {
+    if (e.name !== 'AbortError') alert('接続に失敗しました: ' + e.message);
+  });
+}
+
+// 既存ファイルから自動復元（起動時）
+function restoreFile() {
+  if (!FSA_OK) { setFileStatus(null, false, 'このブラウザは自動保存に非対応'); return; }
+  idbGet('handle').then(function(handle) {
+    if (!handle) { setFileStatus(null, false, ''); return; }
+    fileHandle = handle;
+    // 起動時は権限を確認するだけ（要求はユーザー操作が必要な場合がある）
+    handle.queryPermission({ mode: 'readwrite' }).then(function(p) {
+      if (p === 'granted') {
+        readFileToDb(handle);
+      } else {
+        setFileStatus(handle.name + '（再接続が必要）', false, '「ファイルに再接続」を押してください');
+        // 再接続用にボタンの動作を切替
+        pendingReconnect = true;
+        var btn = document.querySelector('[data-action="connect-file"]');
+        if (btn) btn.textContent = '📁 ファイルに再接続';
+      }
+    });
+  }).catch(function(){ setFileStatus(null, false, ''); });
+}
+
+var pendingReconnect = false;
+
+function reconnectFile() {
+  if (!fileHandle) { connectFile(); return; }
+  verifyPermission(fileHandle, true).then(function(ok) {
+    if (ok) {
+      pendingReconnect = false;
+      readFileToDb(fileHandle);
+    } else {
+      alert('ファイルへのアクセスが許可されませんでした。');
+    }
+  });
+}
+
+function readFileToDb(handle) {
+  handle.getFile().then(function(file) { return file.text(); }).then(function(text) {
+    if (text && text.trim()) {
+      try {
+        var parsed = JSON.parse(text);
+        if (parsed && Array.isArray(parsed.products)) {
+          db = parsed;
+          if (STORAGE_OK) { try { localStorage.setItem(STORE_KEY, JSON.stringify(db)); } catch(e){} }
+        }
+      } catch (e) { /* 壊れていたら無視 */ }
+    }
+    setFileStatus(handle.name, true, '');
+    showList();
+  }).catch(function(e) {
+    setFileStatus(handle.name + '（読込失敗）', false, e.message);
+  });
+}
+
+function writeFileNow() {
+  if (!fileHandle) return Promise.resolve();
+  return verifyPermission(fileHandle, true).then(function(ok) {
+    if (!ok) return;
+    return fileHandle.createWritable().then(function(w) {
+      return w.write(JSON.stringify(db, null, 2)).then(function(){ return w.close(); });
+    });
+  }).catch(function(e) {
+    setFileStatus(fileHandle.name + '（保存失敗）', false, e.message);
+  });
+}
+
+// 入力のたびに呼ばれる。連続入力をまとめて書き込む（デバウンス）
+function scheduleFileWrite() {
+  if (!fileHandle) return;
+  if (writeTimer) clearTimeout(writeTimer);
+  writeTimer = setTimeout(function(){ writeFileNow(); }, 600);
+}
 
 function $(id) { return document.getElementById(id); }
 function getProduct() { return db.products.find(function(p){ return p.id === currentProductId; }); }
@@ -458,6 +625,7 @@ document.addEventListener('click', function(e) {
     case 'del-product':  deleteProduct(); break;
     case 'save-product': addProduct(); break;
     case 'save-part':    addPart(); break;
+    case 'connect-file': pendingReconnect ? reconnectFile() : connectFile(); break;
   }
 });
 
@@ -496,8 +664,17 @@ $('new-product-name').addEventListener('keydown', function(e){ if (e.key === 'En
 $('new-product-meta').addEventListener('keydown', function(e){ if (e.key === 'Enter') addProduct(); });
 $('new-part-name').addEventListener('keydown', function(e){ if (e.key === 'Enter') addPart(); });
 
+// ボタン表示をブラウザ対応状況に合わせる
+if (!FSA_OK) {
+  var cf = document.querySelector('[data-action="connect-file"]');
+  if (cf) cf.textContent = '📁 ファイル保存（非対応）';
+}
+
 // 初期表示
 showList();
+
+// ファイルハンドルの復元（接続済みなら自動で読み込み＆以降自動保存）
+restoreFile();
 </script>
 </body>
 </html>
