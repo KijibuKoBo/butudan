@@ -21,11 +21,9 @@
 
   .container { max-width: 1100px; margin: 0 auto; padding: 20px; }
 
-  /* ページ切り替え */
   .page { display: none; }
   .page.active { display: block; }
 
-  /* 製品一覧 */
   .product-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
@@ -62,7 +60,6 @@
   }
   .add-card:hover { border-color: #8b6f47; color: #8b6f47; }
 
-  /* ボタン */
   .btn {
     display: inline-flex;
     align-items: center;
@@ -84,7 +81,6 @@
   .btn-pdf { background: #2c6fad; color: #fff; }
   .btn-pdf:hover { background: #245a8e; }
 
-  /* ツールバー */
   .toolbar {
     display: flex;
     gap: 10px;
@@ -94,7 +90,6 @@
   }
   .toolbar h2 { flex: 1; font-size: 1.1rem; }
 
-  /* パーツテーブル */
   .parts-table-wrap { overflow-x: auto; margin-top: 4px; }
   table {
     width: 100%;
@@ -115,14 +110,6 @@
   .col-dim { min-width: 60px; text-align: center; }
   .col-note { min-width: 120px; }
 
-  /* セクション区切り */
-  .section-header {
-    background: #d4c4b0 !important;
-    color: #4a3728;
-    font-weight: bold;
-  }
-
-  /* インライン編集 */
   input[type="text"], input[type="number"], textarea, select {
     font-family: inherit;
     font-size: 0.88rem;
@@ -134,7 +121,6 @@
   input[type="number"] { width: 70px; }
   textarea { resize: vertical; min-height: 40px; }
 
-  /* モーダル */
   .modal-overlay {
     display: none;
     position: fixed; inset: 0;
@@ -156,7 +142,6 @@
   .form-group label { display: block; font-size: 0.85rem; color: #666; margin-bottom: 4px; }
   .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px; }
 
-  /* 備考エリア */
   .memo-area {
     background: #fff;
     border-radius: 8px;
@@ -167,7 +152,6 @@
   .memo-area label { font-size: 0.85rem; color: #666; display: block; margin-bottom: 6px; }
   .memo-area textarea { width: 100%; height: 60px; }
 
-  /* 印刷 */
   @media print {
     header, .toolbar .btn, .no-print { display: none !important; }
     body { background: #fff; }
@@ -202,11 +186,11 @@
   <div class="container">
     <div class="print-title" id="print-title"></div>
     <div class="toolbar no-print">
-      <button class="btn btn-ghost" onclick="showList()">← 一覧に戻る</button>
+      <button class="btn btn-ghost" data-action="back">← 一覧に戻る</button>
       <h2 id="detail-title"></h2>
-      <button class="btn btn-primary" onclick="openAddPartModal()">＋ パーツ追加</button>
-      <button class="btn btn-pdf" onclick="printPDF()">PDF出力</button>
-      <button class="btn btn-danger" onclick="deleteProduct()">製品削除</button>
+      <button class="btn btn-primary" data-action="add-part">＋ パーツ追加</button>
+      <button class="btn btn-pdf" data-action="pdf">PDF出力</button>
+      <button class="btn btn-danger" data-action="del-product">製品削除</button>
     </div>
 
     <div class="parts-table-wrap">
@@ -244,7 +228,7 @@
 
     <div class="memo-area no-print">
       <label>製品メモ</label>
-      <textarea id="product-memo" placeholder="全体的な備考・特記事項..." oninput="saveMemo()"></textarea>
+      <textarea id="product-memo" placeholder="全体的な備考・特記事項..."></textarea>
     </div>
     <div class="memo-area" id="print-memo" style="display:none;"></div>
   </div>
@@ -263,8 +247,8 @@
       <input type="text" id="new-product-meta" placeholder="例：実板 全てレッドオーク">
     </div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeModal('modal-product')">キャンセル</button>
-      <button class="btn btn-primary" onclick="addProduct()">追加</button>
+      <button class="btn btn-ghost" data-close="modal-product">キャンセル</button>
+      <button class="btn btn-primary" data-action="save-product">追加</button>
     </div>
   </div>
 </div>
@@ -279,69 +263,99 @@
     </div>
     <div style="font-size:0.85rem; color:#888; margin-bottom:8px;">寸法は後から表で入力できます</div>
     <div class="modal-actions">
-      <button class="btn btn-ghost" onclick="closeModal('modal-part')">キャンセル</button>
-      <button class="btn btn-primary" onclick="addPart()">追加</button>
+      <button class="btn btn-ghost" data-close="modal-part">キャンセル</button>
+      <button class="btn btn-primary" data-action="save-part">追加</button>
     </div>
   </div>
 </div>
 
 <script>
 // --- データ管理 ---
-const STORE_KEY = 'butudan_v1';
+var STORE_KEY = 'butudan_v1';
+
+// localStorageが使えるか判定（data: URLのプレビュー等では無効）
+var STORAGE_OK = (function() {
+  try {
+    var k = '__t';
+    localStorage.setItem(k, '1');
+    localStorage.removeItem(k);
+    return true;
+  } catch (e) { return false; }
+})();
+
+var memoryStore = null; // フォールバック用（保存はされない）
 
 function load() {
+  if (!STORAGE_OK) return memoryStore || { products: [] };
   try { return JSON.parse(localStorage.getItem(STORE_KEY)) || { products: [] }; }
-  catch { return { products: [] }; }
+  catch (e) { return { products: [] }; }
 }
-function save(data) { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+function save(data) {
+  if (!STORAGE_OK) { memoryStore = data; return; }
+  try { localStorage.setItem(STORE_KEY, JSON.stringify(data)); }
+  catch (e) { alert('保存に失敗しました: ' + e.message); }
+}
 
-let db = load();
-let currentProductId = null;
+var db = load();
+var currentProductId = null;
+
+function $(id) { return document.getElementById(id); }
+function getProduct() { return db.products.find(function(p){ return p.id === currentProductId; }); }
+function esc(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function openModal(id) { $(id).classList.add('open'); }
+function closeModal(id) { $(id).classList.remove('open'); }
 
 // --- 製品一覧 ---
 function showList() {
   db = load();
-  document.getElementById('page-list').classList.add('active');
-  document.getElementById('page-detail').classList.remove('active');
-  document.getElementById('breadcrumb').textContent = '';
+  $('page-list').classList.add('active');
+  $('page-detail').classList.remove('active');
+  $('breadcrumb').textContent = '';
   renderProductGrid();
 }
 
 function renderProductGrid() {
-  const grid = document.getElementById('product-grid');
+  var grid = $('product-grid');
   grid.innerHTML = '';
 
-  db.products.forEach(p => {
-    const card = document.createElement('div');
+  db.products.forEach(function(p) {
+    var card = document.createElement('div');
     card.className = 'product-card';
-    card.innerHTML = `<h3>${esc(p.name)}</h3><div class="meta">${esc(p.meta || '')}<br>${p.parts.length}パーツ</div>`;
-    card.onclick = () => showDetail(p.id);
+    card.innerHTML = '<h3>' + esc(p.name) + '</h3><div class="meta">' +
+      esc(p.meta || '') + '<br>' + p.parts.length + 'パーツ</div>';
+    card.addEventListener('click', function(){ showDetail(p.id); });
     grid.appendChild(card);
   });
 
-  const addCard = document.createElement('div');
+  var addCard = document.createElement('div');
   addCard.className = 'add-card';
-  addCard.innerHTML = `<span style="font-size:1.4rem;">＋</span> 製品を追加`;
-  addCard.onclick = () => document.getElementById('modal-product').classList.add('open');
+  addCard.innerHTML = '<span style="font-size:1.4rem;">＋</span> 製品を追加';
+  addCard.addEventListener('click', function(){
+    $('new-product-name').value = '';
+    $('new-product-meta').value = '';
+    openModal('modal-product');
+    setTimeout(function(){ $('new-product-name').focus(); }, 50);
+  });
   grid.appendChild(addCard);
 }
 
 function addProduct() {
-  const name = document.getElementById('new-product-name').value.trim();
-  if (!name) return alert('製品名を入力してください');
-  const meta = document.getElementById('new-product-meta').value.trim();
-  const id = Date.now().toString();
-  db.products.push({ id, name, meta, parts: [], memo: '' });
+  var name = $('new-product-name').value.trim();
+  if (!name) { alert('製品名を入力してください'); return; }
+  var meta = $('new-product-meta').value.trim();
+  var id = Date.now().toString();
+  db.products.push({ id: id, name: name, meta: meta, parts: [], memo: '' });
   save(db);
   closeModal('modal-product');
-  document.getElementById('new-product-name').value = '';
-  document.getElementById('new-product-meta').value = '';
   showDetail(id);
 }
 
 function deleteProduct() {
   if (!confirm('この製品を削除しますか？')) return;
-  db.products = db.products.filter(p => p.id !== currentProductId);
+  db.products = db.products.filter(function(p){ return p.id !== currentProductId; });
   save(db);
   showList();
 }
@@ -350,153 +364,137 @@ function deleteProduct() {
 function showDetail(id) {
   currentProductId = id;
   db = load();
-  const p = getProduct();
-  document.getElementById('page-list').classList.remove('active');
-  document.getElementById('page-detail').classList.add('active');
-  document.getElementById('detail-title').textContent = p.name + (p.meta ? '　' + p.meta : '');
-  document.getElementById('print-title').textContent = p.name + (p.meta ? '　' + p.meta : '');
-  document.getElementById('breadcrumb').textContent = p.name;
-  document.getElementById('product-memo').value = p.memo || '';
+  var p = getProduct();
+  if (!p) { showList(); return; }
+  $('page-list').classList.remove('active');
+  $('page-detail').classList.add('active');
+  var title = p.name + (p.meta ? '　' + p.meta : '');
+  $('detail-title').textContent = title;
+  $('print-title').textContent = title;
+  $('breadcrumb').textContent = p.name;
+  $('product-memo').value = p.memo || '';
   renderParts();
 }
 
-function getProduct() {
-  return db.products.find(p => p.id === currentProductId);
-}
+var SECTIONS = ['std', 'moku', 'rough'];
+var FIELDS = ['w', 'd', 't', 'n'];
 
 function renderParts() {
-  const tbody = document.getElementById('parts-tbody');
+  var tbody = $('parts-tbody');
   tbody.innerHTML = '';
-  const p = getProduct();
-  p.parts.forEach((part, idx) => {
-    const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td class="col-name">${esc(part.name)}</td>
-      ${dimCells(part, 'std')}
-      ${dimCells(part, 'moku')}
-      ${dimCells(part, 'rough')}
-      <td><input type="text" value="${esc(part.note||'')}" placeholder="備考" onchange="updateField(${idx},'note',this.value)"></td>
-      <td class="no-print">
-        <button class="btn btn-ghost" style="padding:4px 8px;font-size:0.8rem;" onclick="deletePart(${idx})">削除</button>
-      </td>
-    `;
+  var p = getProduct();
+
+  p.parts.forEach(function(part, idx) {
+    var tr = document.createElement('tr');
+
+    var html = '<td class="col-name">' + esc(part.name) + '</td>';
+    SECTIONS.forEach(function(sec) {
+      var d = part[sec] || {};
+      FIELDS.forEach(function(f, i) {
+        var border = i === 0 ? ' style="border-left:2px solid #e0d0c0;"' : '';
+        html += '<td class="col-dim"' + border + '>' +
+          '<input type="number" data-idx="' + idx + '" data-sec="' + sec + '" data-field="' + f + '" ' +
+          'value="' + (d[f] != null ? d[f] : '') + '" placeholder="-"></td>';
+      });
+    });
+    html += '<td><input type="text" data-idx="' + idx + '" data-note="1" value="' +
+      esc(part.note || '') + '" placeholder="備考"></td>';
+    html += '<td class="no-print"><button class="btn btn-ghost" data-del="' + idx +
+      '" style="padding:4px 8px;font-size:0.8rem;">削除</button></td>';
+
+    tr.innerHTML = html;
     tbody.appendChild(tr);
   });
-}
-
-function dimCells(part, key) {
-  const d = part[key] || {};
-  return ['w','d','t','n'].map((f,i) => {
-    const idx = part._idx !== undefined ? part._idx : -1;
-    return `<td class="col-dim" style="${i===0?'border-left:2px solid #e0d0c0;':''}">
-      <input type="number" value="${d[f]||''}" placeholder="-"
-        onchange="updateDim(${part._idx},'${key}','${f}',this.value)">
-    </td>`;
-  }).join('');
-}
-
-function renderParts() {
-  const tbody = document.getElementById('parts-tbody');
-  tbody.innerHTML = '';
-  const p = getProduct();
-  p.parts.forEach((part, idx) => {
-    const tr = document.createElement('tr');
-    const std = part.std || {};
-    const moku = part.moku || {};
-    const rough = part.rough || {};
-    tr.innerHTML = `
-      <td class="col-name">${esc(part.name)}</td>
-      <td class="col-dim" style="border-left:2px solid #e0d0c0;"><input type="number" value="${std.w||''}" placeholder="-" onchange="updateDim(${idx},'std','w',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${std.d||''}" placeholder="-" onchange="updateDim(${idx},'std','d',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${std.t||''}" placeholder="-" onchange="updateDim(${idx},'std','t',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${std.n||''}" placeholder="-" onchange="updateDim(${idx},'std','n',this.value)"></td>
-      <td class="col-dim" style="border-left:2px solid #e0d0c0;"><input type="number" value="${moku.w||''}" placeholder="-" onchange="updateDim(${idx},'moku','w',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${moku.d||''}" placeholder="-" onchange="updateDim(${idx},'moku','d',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${moku.t||''}" placeholder="-" onchange="updateDim(${idx},'moku','t',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${moku.n||''}" placeholder="-" onchange="updateDim(${idx},'moku','n',this.value)"></td>
-      <td class="col-dim" style="border-left:2px solid #e0d0c0;"><input type="number" value="${rough.w||''}" placeholder="-" onchange="updateDim(${idx},'rough','w',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${rough.d||''}" placeholder="-" onchange="updateDim(${idx},'rough','d',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${rough.t||''}" placeholder="-" onchange="updateDim(${idx},'rough','t',this.value)"></td>
-      <td class="col-dim"><input type="number" value="${rough.n||''}" placeholder="-" onchange="updateDim(${idx},'rough','n',this.value)"></td>
-      <td><input type="text" value="${esc(part.note||'')}" placeholder="備考" onchange="updateField(${idx},'note',this.value)"></td>
-      <td class="no-print" style="white-space:nowrap;">
-        <button class="btn btn-ghost" style="padding:4px 8px;font-size:0.8rem;" onclick="deletePart(${idx})">削除</button>
-      </td>
-    `;
-    tbody.appendChild(tr);
-  });
-}
-
-function updateDim(idx, section, field, value) {
-  const p = getProduct();
-  if (!p.parts[idx][section]) p.parts[idx][section] = {};
-  p.parts[idx][section][field] = value === '' ? null : Number(value);
-  save(db);
-}
-
-function updateField(idx, field, value) {
-  const p = getProduct();
-  p.parts[idx][field] = value;
-  save(db);
 }
 
 function addPart() {
-  const name = document.getElementById('new-part-name').value.trim();
-  if (!name) return alert('パーツ名を入力してください');
-  const p = getProduct();
-  p.parts.push({ name, std: {}, moku: {}, rough: {}, note: '' });
+  var name = $('new-part-name').value.trim();
+  if (!name) { alert('パーツ名を入力してください'); return; }
+  var p = getProduct();
+  p.parts.push({ name: name, std: {}, moku: {}, rough: {}, note: '' });
   save(db);
   closeModal('modal-part');
-  document.getElementById('new-part-name').value = '';
   renderParts();
 }
 
 function deletePart(idx) {
   if (!confirm('このパーツを削除しますか？')) return;
-  const p = getProduct();
+  var p = getProduct();
   p.parts.splice(idx, 1);
   save(db);
   renderParts();
 }
 
-function saveMemo() {
-  const p = getProduct();
-  p.memo = document.getElementById('product-memo').value;
-  save(db);
-}
-
 // --- PDF出力 ---
 function printPDF() {
-  const memo = document.getElementById('product-memo').value;
-  const printMemo = document.getElementById('print-memo');
+  var memo = $('product-memo').value;
+  var printMemo = $('print-memo');
   if (memo) {
     printMemo.style.display = 'block';
-    printMemo.innerHTML = `<label>備考</label><div style="white-space:pre-wrap;font-size:0.88rem;">${esc(memo)}</div>`;
+    printMemo.innerHTML = '<label>備考</label><div style="white-space:pre-wrap;font-size:0.88rem;">' +
+      esc(memo) + '</div>';
   }
   window.print();
   printMemo.style.display = 'none';
 }
 
-// --- モーダル ---
-function openAddPartModal() {
-  document.getElementById('modal-part').classList.add('open');
-  setTimeout(() => document.getElementById('new-part-name').focus(), 100);
-}
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+// --- イベント登録（イベント委譲） ---
+// ツールバー・モーダルのボタン
+document.addEventListener('click', function(e) {
+  var t = e.target.closest('[data-action], [data-close], [data-del]');
+  if (!t) return;
 
-// クリック外でモーダルを閉じる
-document.querySelectorAll('.modal-overlay').forEach(el => {
-  el.addEventListener('click', e => { if (e.target === el) el.classList.remove('open'); });
+  if (t.hasAttribute('data-close')) { closeModal(t.getAttribute('data-close')); return; }
+  if (t.hasAttribute('data-del'))   { deletePart(Number(t.getAttribute('data-del'))); return; }
+
+  switch (t.getAttribute('data-action')) {
+    case 'back':         showList(); break;
+    case 'add-part':
+      $('new-part-name').value = '';
+      openModal('modal-part');
+      setTimeout(function(){ $('new-part-name').focus(); }, 50);
+      break;
+    case 'pdf':          printPDF(); break;
+    case 'del-product':  deleteProduct(); break;
+    case 'save-product': addProduct(); break;
+    case 'save-part':    addPart(); break;
+  }
+});
+
+// 寸法・備考の入力（イベント委譲）
+$('parts-tbody').addEventListener('change', function(e) {
+  var el = e.target;
+  if (el.tagName !== 'INPUT') return;
+  var idx = Number(el.getAttribute('data-idx'));
+  var p = getProduct();
+  if (!p || !p.parts[idx]) return;
+
+  if (el.hasAttribute('data-note')) {
+    p.parts[idx].note = el.value;
+  } else {
+    var sec = el.getAttribute('data-sec');
+    var field = el.getAttribute('data-field');
+    if (!p.parts[idx][sec]) p.parts[idx][sec] = {};
+    p.parts[idx][sec][field] = el.value === '' ? null : Number(el.value);
+  }
+  save(db);
+});
+
+// メモ保存
+$('product-memo').addEventListener('input', function() {
+  var p = getProduct();
+  if (p) { p.memo = this.value; save(db); }
+});
+
+// モーダル背景クリックで閉じる
+document.querySelectorAll('.modal-overlay').forEach(function(el) {
+  el.addEventListener('click', function(e) { if (e.target === el) el.classList.remove('open'); });
 });
 
 // Enterキーで確定
-document.getElementById('new-product-name').addEventListener('keydown', e => { if (e.key === 'Enter') addProduct(); });
-document.getElementById('new-part-name').addEventListener('keydown', e => { if (e.key === 'Enter') addPart(); });
-
-// --- ユーティリティ ---
-function esc(str) {
-  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+$('new-product-name').addEventListener('keydown', function(e){ if (e.key === 'Enter') addProduct(); });
+$('new-product-meta').addEventListener('keydown', function(e){ if (e.key === 'Enter') addProduct(); });
+$('new-part-name').addEventListener('keydown', function(e){ if (e.key === 'Enter') addPart(); });
 
 // 初期表示
 showList();
